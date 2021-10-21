@@ -122,6 +122,6 @@ function qscatter(ga,gs,ge)
     markercolor = :cyan,
     label = "earth");
 
-    savefig("test.png")
+    savefig("qscatter.png")
 end
 

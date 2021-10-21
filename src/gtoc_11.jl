@@ -1,117 +1,124 @@
 module gtoc_11
 
-using CSV,DataFrames,Plots,Revise,Statistics,LinearAlgebra,DifferentialEquations,GalacticOptim, Optim, ProgressBars,GTOC11Utils
-export AU,Day,Year,mu,Latd,alpha,as,data,t1,earth,asteroid,station,updateAsteroids,updateStations,lambert,twobody,dolambert,filterLambertEarth,drθ,findControl,rung,data_ms,data_bs,data_as,leaveEarth,e2a_stats#,a2a_stats
+using CSV,DataFrames,Serialization,Revise,Statistics,Plots,LinearAlgebra,ProgressBars,DifferentialEquations,GalacticOptim,Optim#GTOC11Utils,
+
+export AU,Day,Year,μ,Γ,α,tmin,tmax,g,gUpdate!,dolambert,filterLambertEarth!,filterLambertAsteroid!,drθ,dvθ,leaveEarth!,findNextAsteroid!,motherShipRun!,runMotherships!#,findControl,rung,e2a_stats,a2a_stats,
 
 ## Constants
-AU = 1.49597870691e8 #km
-Day = 86400 #s 
-Year = 365.25 #day
-t1 = 100000/Year
-mu = 1.32712440018e11*Day^2/AU^3*Year^2 #converted to AU^3/Year^2 from km^3/s^2
-Latd = 1e-4/1000*(Day^2/AU*Year^2) #converted to AU/Year^2 from m/s^2
-alpha = 6e-9*Day*Year #s^-1
-#95739 = 1/1/21
-#103044 = 1/1/41
+const AU = 1.49597870691e8 #km
+const Day = 86400 #s 
+const Year = 365.25 #day
+const μ = 1.32712440018e11*Day^2/AU^3*Year^2 #converted to AU^3/Year^2 from km^3/s^2
+const Γ = 1e-4/1000*(Day^2/AU*Year^2) #converted to AU/Year^2 from m/s^2
+const α = 6e-9*Day*Year #s^-1
+const tmin = 95739/Year # = 1/1/21
+const tmax = 103044/Year # = 1/1/41
 
-## Asteroid Data
-tmp = CSV.read("asteroid.csv",DataFrame)
-N = size(tmp,1)
-eph = Vector{NamedTuple}(undef,N) 
-x = Vector{Vector{Float64}}(undef,N)
-Z = Vector{Float64}(undef,N)
-c = falses(N)
-act = Vector{Float64}(undef,N)
-data = DataFrame(
-    id = tmp[:,:ID],
-    eph = eph,
-    m = tmp[:,:m],
-    x = x,
-    c = c,
-    Z = Z,
-    act = act
-)
-for i = 1:N
-    tmp_eph = (
-        t0 = tmp[i,:t0]/Year,
-        a = tmp[i,:a],
-        e = tmp[i,:e],
-        i = tmp[i,:i]*pi/180,
-        Ω = tmp[i,:W]*pi/180,
-        ω = tmp[i,:w]*pi/180,
-        M0 = tmp[i,:M]*pi/180
-    )
-    data[i,:eph] = tmp_eph
+#Recording
+record_ms(t,x,dv,tid) = DataFrame(t=t,x=x[1],y=x[2],z=x[3],vx=x[4],vy=x[5],vz=x[6],dvx=dv[1],dvy=dv[2],dvz=dv[3],tid=tid)
+record_bs(t,eph,ϕ) = DataFrame(t=t,a=eph.a,i=eph.e,W=eph.Ω,phi=ϕ)
+record_as(t,x,ax,m) = DataFrame(t=t,x=x[1],y=x[2],z=x[3],vx=x[4],vy=x[5],vz=x[6],ax=ax[1],ay=ax[2],az=ax[3],m=m)
+
+#Definitions
+struct Eph 
+    t0::Float64
+    a::Float64
+    e::Float64
+    i::Float64
+    Ω::Float64
+    ω::Float64
+    M0::Float64
 end
 
-as = mean(tmp[:,:a]) #semimajor axis for dyson ring
-
-## Earth
-function earth(t)
-    eph = (
-    a = 9.998012770769207e-1, #AU
-    e = 1.693309475505424e-2,
-    i = 3.049485258137714e-3 *pi/180,#deg
-    Ω = 1.662869706216879e2 *pi/180,#deg
-    ω = 2.978214889887391e2 *pi/180,#deg
-    M = 1.757352290983351e2 *pi/180,#deg
-    t0 = 59396/Year #MJD
-    )
-    x0 = (eph = eph)    
-    xf = propagate(t,x0)
-    out = (t=t, x=xf)
-    return out
+mutable struct Earth
+    eph::Eph
+    x::Vector{Float64}    
 end
 
-# Asteroids
-function asteroid(t,data)          
-    xf = propagate(t,data.eph)
-    return (id=data.id,t=t,x=xf,eph=data.eph,m=data.m)    
-end
-function updateAsteroids(t,data::DataFrame)
-    N = size(data,1)    
-    x = Vector{NamedTuple}(undef,N)
-    for i = 1:N        
-        x[i] = asteroid(t,data[i,:])
-    end    
-    return x
-end
-function updateAsteroids(t,data::Vector{NamedTuple})
-    N = length(data)    
-    x = Vector{NamedTuple}(undef,N)
-    for i = 1:N        
-        x[i] = asteroid(t,data[i])
-    end    
-    return x
-end
-#Stations
-function station(id,t)
-    Ms = LinRange(0,330,12)*pi/180
-    eph = (
-    t0 = 95739/Year,
-    a = as,
-    e = 0,
-    i = 0,
-    Ω = 0,
-    ω = 0,    
-    M0 = Ms[id]    
-    )
-    x0 = (eph=eph)
-    xf = propagate(t,x0)
-    
-    return (id=id,t=t,x=xf,eph=eph)
+mutable struct Asteroid
+    id::Int64
+    eph::Eph
+    x::Vector{Float64}
+    mass::Float64
+    captured::Bool    
+    activatetime::Float64
+    record::DataFrame
 end
 
-function updateStations(t)    
-    x = Vector{NamedTuple}(undef,12)
-    for i = 1:12        
-        x[i] = station(i,t)
+mutable struct Mothership    
+    id::Int64    
+    x::Vector{Float64}
+    record::DataFrame
+end
+
+
+mutable struct BuildingStation
+    id::Int64
+    eph::Eph
+    asteroids::Vector{Asteroid}
+    record::DataFrame
+end
+
+mutable struct Data
+    earth::Earth         
+    motherships::Vector{Mothership} 
+    asteroids ::Vector{Asteroid}
+    buildingstations::Vector{BuildingStation}    
+end
+
+convertEarthEph() = Eph(
+    59396/Year,
+    9.998012770769207e-1, #AU
+    1.693309475505424e-2,
+    3.049485258137714e-3 *pi/180,#deg
+    1.662869706216879e2 *pi/180,#deg
+    2.978214889887391e2 *pi/180,#deg
+    1.757352290983351e2 *pi/180)#deg     
+makeEarth() = Earth(convertEarthEph(),Vector{Float64}(undef,6))
+
+convertAsteroidEph(x) = Eph(x.t0,x.a,x.e,deg2rad(x.i),deg2rad(x.W),deg2rad(x.w),deg2rad(x.M))
+makeAsteroid(x) = Asteroid(x.ID,convertAsteroidEph(x),Vector{Float64}(undef,6),x.m,false,Inf,DataFrame())
+
+function convertBuildingStationEph(id,a)
+    ϕs = LinRange(0,330,12).*pi/180 #building station initial phases
+    return Eph(95739/Year,a,0,0,0,0,ϕs[id])
+end
+makeBuildingStation(id) = BuildingStation(id,convertBuildingStationEph(id,aDyson),Vector{Asteroid}(undef,0),DataFrame()) 
+
+makeMotherShip(id) = Mothership(id,Vector{Float64}(undef,6),DataFrame())
+
+#Read in the data
+tmp = CSV.read("data/asteroid.csv",DataFrame)
+#Make the Asteroids
+asteroids = [makeAsteroid(tmp[i,:]) for i in 1:size(tmp,1)]
+motherships = [makeMotherShip(i) for i in 1:10]
+aDyson = mean([asteroids[i].eph.a for i in 1:size(asteroids,1)]) #semimajor axis for dyson ring
+buildingstations = [makeBuildingStation(i) for i in 1:12]
+
+g = Data(makeEarth(),motherships,asteroids,buildingstations)
+
+#gUpdate!
+function gUpdate!(t,data)    
+    x,t = propagate(t,data.eph)        
+    data.x = x    
+    return data    
+end
+function gUpdate!(t,data::Vector)
+    for i = 1:length(data)
+        data[i] = gUpdate!(t,data[i])
     end
-    return x
 end
-function propagate(t,x)
-    t0,a,e,i,Ω,ω,M0 = x 
-    n = sqrt((mu)/a^3)
+
+function propagate(t,eph)
+    t0 = eph.t0
+    a =eph.a
+    e=eph.e
+    i=eph.i
+    Ω=eph.Ω
+    ω=eph.ω
+    M0=eph.M0
+     
+    n = sqrt(μ/a^3)
     M = mod2pi(n*(t-t0)+M0)
     #Using Newton's method to solve Keplers Equation for E Eccentric Anomaly   
     f(x) = x-e*sin(x)-M
@@ -135,7 +142,7 @@ function propagate(t,x)
     #Norm of the radius vector
     r = a*(1-e^2)/(1+e*cos(f))
     #Norm of the velocity vector
-    v = sqrt(2*mu/r-mu/a)
+    v = sqrt(2*μ/r-μ/a)
     x = r*(cos(f+ω)*cos(Ω)-sin(f+ω)*cos(i)*sin(Ω))
     y = r*(cos(f+ω)*sin(Ω)+sin(f+ω)*cos(i)*cos(Ω))
     z = r*(sin(f+ω)*sin(i))
@@ -143,7 +150,7 @@ function propagate(t,x)
     vy = v*(-sin(f+ω-γ)*sin(Ω)+cos(f+ω-γ)*cos(i)*cos(Ω))
     vz = v*(cos(f+ω-γ)*sin(i))
     xf = [x,y,z,vx,vy,vz]    
-    return xf
+    return xf,t
 end
 
 function odefunc!(du,u,p,t)
@@ -152,7 +159,7 @@ function odefunc!(du,u,p,t)
 
     rm = norm(r)
     du[1:3] = dxyz
-    du[4:6] = -mu/rm^3*r
+    du[4:6] = -μ/rm^3*r
     return nothing
 end
 prob = ODEProblem(odefunc!,zeros(6),(0,0))
@@ -177,14 +184,14 @@ function objlambert(v,p)
 end
 
 function optlambert(x1,x2,t1,t2)    
-    r1 = x1[1:3]
-    v0 = x1[4:6]
-    r2 = x2[1:3]
+    r1 =  x1[1:3]
+    v0 =  x1[4:6]
+    r2 =  x2[1:3]
     p = [r1;r2;t1;t2]   
 
     fobj = OptimizationFunction(objlambert, GalacticOptim.AutoForwardDiff())
     prob = OptimizationProblem(fobj,v0,p)
-    sol = solve(prob,NewtonTrustRegion(),f_tol = 1e-9, x_tol = 1e-9)
+    sol = solve(prob,NewtonTrustRegion())
 
     return sol
 end
@@ -198,12 +205,9 @@ function dolambert(x1,x2,t1,t2)
     e = rf-x2[1:3]
     emag = sqrt(e'*e)    
     dv1 = x0[4:6] - x1[4:6]
-    dv2 = x2[4:6] - prop.u[end][4:6]    
-    dv1mag = norm(dv1)
-    dv2mag = norm(dv2)
-    return sol.u,emag,(dv1mag,dv2mag),prop    
+    dv2 = x2[4:6] - prop.u[end][4:6]        
+    return dv1,dv2,prop.u[end]#,sol.u,emag,prop    
 end
-
 
 function drθ(g1,g2)  
     x1 = g1.x
@@ -219,6 +223,19 @@ function drθ(g1,g2)
     return out
 end
 
+function dvθ(g1,g2)  
+    x1 = g1.x
+    x2 = g2.x
+
+    out = zeros(2)          
+    p = x2[1:3] - x1[1:3]
+    out[1] = norm(p)
+    v1 = x1[4:6]
+    out[2] = mod2pi(acos(dot(p,v1)/(norm(p)*norm(v1))))
+    return out
+end
+
+#=
 function e2a_stats(t1,T)    
     N = 1000
     ind = rand(1:size(data,1),N)    
@@ -234,65 +251,63 @@ function e2a_stats(t1,T)
         v,e,dv = dolambert(ge.x,ga2[i].x,t1,t2)   
         er[i] = e
         vm[i] = dv[1]*AU/Year/Day
-        dvm[i] = dv[2]
+        dvm[i] = dv[2]*AU/Year/Day
         rθ[:,i] .= drθ(ge,ga1[i])         
     end        
     return (vm=vm,er=er,dvm=dvm,rθ=rθ)
 end
-#=
-function a2a_stats()
-    N = 10000    
-    v = zeros(3,N)
-    er = zeros(N)
-    d = zeros(N)
-    dθ = zeros(N)    
-    t1 = 100000/Year
-    T = 0.75
-    t2 = t1 + T
 
-    ind = rand(data[:,:ID],N+1)
-    xa0 = asteroid(ind[end],t1,data)
-
-    θa0 = atan(xa0[2],xa0[1])  
-    if θa0 < 0
-        θa0 = 2*pi + θa0   
-    end    
-    
-    d2 = data[ind[1:end-1],:]
-    xa = updateAsteroids(t2,d2)
+function a2a_stats(t1,T,a)        
+    t2 = t1 + T  
+    g1,ga,rθ = filterLambertAsteroid(t1,a,data)    
+    g2 = updateAsteroids(t2,g1)
+    N = length(g2)
+    er=zeros(N)
+    ΔVd=zeros(N)
+    ΔVa=zeros(N)
+    ΔVt=zeros(N)
     Threads.@threads for i in ProgressBar(1:N)
-        v[:,i],er[i],d[i] = dolambert(xa0,xa[:,i],t1,t2)
-        θa = atan(xa[2,i],xa[1,i])    
-        if θa < 0
-            θa = 2*pi + θa   
-        end
-        dθ[i] = θa-θa0
+        _,e,dv = dolambert(ga[1].x,g2[i].x,t1,t2)
+        er[i] = e        
+        ΔVd[i] = dv[1]*AU/Year/Day
+        ΔVa[i] = dv[2]*AU/Year/Day
+        ΔVt[i] = ΔVd[i]+ΔVa[i]        
     end
-    C = size(d2,2)
-    insertcols!(d2,C+1,:er => er)
-    insertcols!(d2,C+2,:d => d)
-    insertcols!(d2,C+3,:dθ => dθ)
-    return d2
+    l = rθ.dθ .> pi;
+    rθ.dθ[l] .= rθ.dθ[l] .- 2*pi 
+    return (ΔVd=ΔVd,ΔVt=ΔVt,ΔVa=ΔVa,er=er,rθ=rθ)
 end
 =#
-function filterLambertEarth(t,data)
-    rlimit = 3 #AU
+function filterLambertEarth!(t,g)
+    rlimit = 4 #AU
     θlimit = 2
 
-    ge = earth(t)    
-    ga = updateAsteroids(t,data)
-    N = length(ga)
+    gUpdate!(t,g.earth)
+    gUpdate!(t,g.asteroids)
+    N = length(g.asteroids)
     d = zeros(2,N)
     for i = 1:N
-        d[:,i] .= drθ(ge,ga[i])
+        d[:,i] .= drθ(g.earth,g.asteroids[i])
     end
     lr = d[1,:] .< rlimit        
     #lθ = (d[2,:] .> θlimit[1]) .& (d[2,:] .< θlimit[2])
     lθ = d[2,:] .< θlimit
     l = (lr.& lθ)    
-    return ga[l],ge#,(dr = d[1,l],dθ = d[2,l])
+    return g.asteroids[l]#,(ρ = d[1,l],dθ = d[2,l])
 end
 
+function filterLambertAsteroid!(t,id,g,rlimit = 0.25)    
+    gUpdate!(t,g.asteroids)
+    N = length(g.asteroids)    
+    d = zeros(2,N)
+    l = falses(N)
+    for i = 1:N
+        d[:,i] .= dvθ(g.asteroids[id],g.asteroids[i])
+        l[i] = (d[1,i] < rlimit) & (g.asteroids[i].mass >= 5e13) & (d[1,i] > 0)# to get rid of the current asteroid
+    end    
+    return g.asteroids[l]#,(ρ = d[1,l],dθ = d[2,l])
+end
+#=
 function findControl(xs,a)    
     N = 5    
     er = 10 #km
@@ -322,10 +337,6 @@ function findControl(xs,a)
     return out
 end
 
-#Recording
-data_ms = DataFrame(t=Float64,x=Float64,y=Float64,z=Float64,vx=Float64,vy=Float64,vz=Float64,dvx=Float64,dvy=Float64,dvz=Float64,tid=Int64)
-data_bs = DataFrame(t=Float64,a=Float64,i=Float64,W=Float64,phi=Float64)
-data_as = DataFrame(t=Float64,x=Float64,y=Float64,z=Float64,vx=Float64,vy=Float64,vz=Float64,ax=Float64,ay=Float64,az=Float64,m=Float64)
 
 function rung(xs,g)
     N = size(g,1)
@@ -338,25 +349,44 @@ function rung(xs,g)
     v = map(x1->any(map(x2-> x2.valid,x1)),out)
     return out,v,d
 end
-
+=#
 ## Missions
-function leaveEarth(t,data)   
-    T = 0.1
-    starters = Vector{NamedTuple}(undef,10) 
-    for ms = 1:10
+function leaveEarth!(t,g)   
+    T = 0.1        
+    starters = deserialize("starters.jls")    
+    map(x->x.captured = false, g.asteroids) #reset captured flag for all asteroids
+    for i = (1:10)
+        t1 = t+(i-1)*T
+        t2 = t1+1        
+        id = starters[1][i].id        
+        gUpdate!(t1,g.earth)
+        gUpdate!(t2,g.asteroids[id])
+        ΔVd,ΔVa,xf = dolambert(g.earth.x,g.asteroids[id].x,t1,t2)
+        rd = record_ms(t1,g.earth.x,ΔVd.*(AU/Year/Day),-1)
+        ra = record_ms(t2,xf,ΔVa,id)   
+        g.motherships[i].record = DataFrame() #reset record            
+        g.motherships[i].record = [g.motherships[i].record;rd;ra]
+    end
+end
+function getStarters()
+    starters = Vector{Asteroid}(undef,10) 
+
+    sol = Vector{Any}(undef,10)
+    for ms = (1:10)
+        t1 = t+(ms-1)*T
+        t2 = t1+1        
         fga,ge = filterLambertEarth(t+(ms-1)*T,data)
+        #ind = rand(1:length(fga),100)
+        #fga = fga[ind]
         N = length(fga)          
         valid = falses(N)    
         res = Vector{NamedTuple}(undef,N)
-        t1 = t
-        t2 = t+0.25        
-        ga = updateAsteroids(t2,fga)
-        #Threads.@threads for i in ProgressBar(1:N)        
-        for i in ProgressBar(1:N)        
+        ga = gUpdateAsteroids(t2,fga)        
+        Threads.@threads for i in ProgressBar(1:N)                
             _,e,dvm = dolambert(ge.x,ga[i].x,t1,t2)
             ΔVd = dvm[1]*AU/Year/Day
             ΔVa = dvm[2]*AU/Year/Day        
-            valid[i] = (ΔVd < 6) & (e < 1e-5)
+            valid[i] =  ΔVd < 6
             J = 1e-10*ga[i].m/(1+ΔVa/50)^2
             res[i] = (
                 id=ga[i].id,
@@ -365,16 +395,77 @@ function leaveEarth(t,data)
                 ΔVa=ΔVa,
                 m=ga[i].m,
                 t=(t1,t2),
-                x=ga[i].x,                
-                sol=missing)
-        end 
+                x=ga[i].x
+                )
+        end                
         out = res[valid]
+        #out = res
         best = findmax(map(x->x.J,out))
         starters[ms] = out[best[2]]
-        _,_,_,_,p = dolambert(ge.x,starters[ms].x,t1,t2)
-        starters[ms].sol = p
-    end
-    return starters
+        _,_,_,sol[ms] = dolambert(ge.x,starters[ms].x,t1,t2)
+    end 
+    return starters,sol
 end
 
-end # module
+function findNextAsteroid!(t1,msid,g,rlimit = 0.25)    
+    aid = g.motherships[msid].record[end,:tid]
+    amass = g.asteroids[aid].mass
+    x0 = Vector(g.motherships[msid].record[end,2:7])
+    others = filterLambertAsteroid!(t1,aid,g,rlimit)
+    while isempty(others) #expand search if nothing in range
+        rlimit = rlimit + 0.1
+        others = filterLambertAsteroid!(t1,aid,g,rlimit)
+    end
+    N = length(others)    
+    res = Vector{NamedTuple}(undef,N)
+    valid = falses(N)    
+    t2 = t1+0.25
+    gUpdate!(t2,others)
+    gUpdate!(t1,g.asteroids[aid])        
+    for i in (1:N)           
+        dvd,dva,xf = dolambert(x0,others[i].x,t1,t2)
+        ΔVd = dvd.*(AU/Year/Day)
+        ΔVa = dva.*(AU/Year/Day)
+        J = 1e-10*amass/(1+norm(ΔVa)/50)^2 #optimize this by looking at the last asteroid arrive dv        
+        res[i] = (
+            id=others[i].id,
+            J=J,            
+            t=(t1,t2),
+            ΔVd = ΔVd,
+            ΔVa = ΔVa,
+            x=xf
+            )                
+        valid[i] = !g.asteroids[others[i].id].captured
+    end     
+    out = res[valid]
+    if isempty(out) #expand search if nothing in range        
+        return findNextAsteroid!(t1,msid,g,rlimit+0.2)
+    else
+        best = findmax(map(x->x.J,out))
+        next = out[best[2]]
+        rd = record_ms(next.t[1],x0,next.ΔVd,0)        
+        ra = record_ms(next.t[2],next.x,next.ΔVa,next.id)        
+        g.asteroids[next.id].captured = true
+        g.motherships[msid].record = [g.motherships[msid].record;rd;ra]
+        #_,_,_,sol = dolambert(a1.x,next.x,t1,t2)            
+        return next.t[2] 
+    end
+end
+
+function motherShipRun!(msid,g)    
+    t = g.motherships[msid].record[end,:t]    
+    while t < tmax     
+        perc = (t-tmin)/(tmax-tmin)*100
+        print("Mothership: $msid, Time: $t, %$perc\n")
+        t = findNextAsteroid!(t,msid,g)                
+    end    
+end
+
+function runMotherships!(g)
+    leaveEarth!(tmin,g)    
+    Threads.@threads for i = 1:length(g.motherships)        
+        motherShipRun!(i,g)
+    end    
+end
+
+end#module

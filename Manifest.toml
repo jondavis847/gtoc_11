@@ -564,9 +564,9 @@ version = "0.61.0+0"
 
 [[GTOC11Utils]]
 deps = ["ComponentArrays", "ConcreteStructs", "DifferentialEquations", "GalacticOptim", "LinearAlgebra", "Optim", "Plots", "SimulationLogs", "StaticArrays", "UnPack", "Unitful", "UnitfulAstro"]
-path = "D:\\Users\\jpdavis6\\.julia\\dev\\GTOC11Utils"
+path = "C:\\Users\\jonda\\.julia\\dev\\GTOC11Utils"
 uuid = "1a5803e8-2930-4de9-b57f-a4840303f668"
-version = "0.1.1"
+version = "0.1.2"
 
 [[GalacticOptim]]
 deps = ["ArrayInterface", "ConsoleProgressMonitor", "DiffResults", "DocStringExtensions", "Logging", "LoggingExtras", "Printf", "ProgressLogging", "Reexport", "Requires", "SciMLBase", "TerminalLoggers"]
